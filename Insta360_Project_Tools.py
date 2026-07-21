@@ -6,6 +6,8 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
+#test
+
 CFG = os.path.expanduser("~/.insta360_project_tools.json")
 
 def load_cfg():
