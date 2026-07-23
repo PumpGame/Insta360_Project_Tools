@@ -13,27 +13,32 @@ PARAM_CONFIG = {
     "fov": {
         "label": "FOV",
         "modes": (("scale", "Scale"), ("set", "Set")),
-        "default": "1.30",
+        "default": "0",
+        "slider": {"from": 0.0, "to": 3.0, "resolution": 0.01},
     },
     "pan": {
         "label": "Pan",
         "modes": (("offset", "Offset"), ("set", "Set")),
         "default": "0",
+        "slider": {"from": -180.0, "to": 180.0, "resolution": 0.1},
     },
     "tilt": {
         "label": "Tilt",
         "modes": (("offset", "Offset"), ("set", "Set")),
         "default": "0",
+        "slider": {"from": -180.0, "to": 180.0, "resolution": 0.1},
     },
     "roll": {
         "label": "Roll",
         "modes": (("offset", "Offset"), ("set", "Set")),
         "default": "0",
+        "slider": {"from": -180.0, "to": 180.0, "resolution": 0.1},
     },
     "distance": {
         "label": "Distance",
         "modes": (("scale", "Scale"), ("set", "Set")),
-        "default": "1.10",
+        "default": "0",
+        "slider": {"from": 0.0, "to": 3.0, "resolution": 0.01},
     },
 }
 
@@ -209,6 +214,7 @@ def get_parameter_settings():
     for name in SUPPORTED_PARAMS:
         try:
             settings[name] = {
+                "enabled": parameter_enabled[name].get(),
                 "mode": parameter_modes[name].get(),
                 "value": float(parameter_values[name].get().strip()),
             }
@@ -237,7 +243,7 @@ def process():
         nonlocal touched_keyframes
         touched = False
         for name in SUPPORTED_PARAMS:
-            if name in numeric_supported:
+            if settings[name]["enabled"] and name in numeric_supported:
                 new_value = modify_parameter(
                     node[name],
                     settings[name]["mode"],
@@ -277,8 +283,8 @@ def process():
 cfg = load_cfg()
 root = tk.Tk()
 root.title("Insta360 Project Tools")
-root.geometry("900x760")
-root.minsize(820, 680)
+root.geometry("860x540")
+root.minsize(780, 500)
 
 selected = tk.StringVar()
 overwrite = tk.BooleanVar(value=True)
@@ -286,17 +292,24 @@ recent_var = tk.StringVar(value="Recent")
 keyframe_count_var = tk.StringVar(value="0")
 range_vars = {name: tk.StringVar(value="Not present") for name in SUPPORTED_PARAMS}
 unsupported_var = tk.StringVar(value="None")
+parameter_enabled = {}
 parameter_modes = {}
 parameter_values = {}
+parameter_sliders = {}
 
 main = ttk.Frame(root, padding=12)
 main.pack(fill="both", expand=True)
-main.columnconfigure(0, weight=1)
-main.rowconfigure(4, weight=1)
+main.columnconfigure(0, weight=3)
+main.columnconfigure(1, weight=2)
 
 ttk.Label(main, text="Project").grid(row=0, column=0, sticky="w")
+ttk.Label(
+    main,
+    text="Load an .insproj project file from the project folder to batch-change keyframe values.",
+    justify="left",
+).grid(row=0, column=1, sticky="w")
 project_row = ttk.Frame(main)
-project_row.grid(row=1, column=0, sticky="ew", pady=(4, 12))
+project_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 10))
 project_row.columnconfigure(0, weight=1)
 
 ttk.Entry(project_row, textvariable=selected).grid(row=0, column=0, sticky="ew")
@@ -306,8 +319,8 @@ menu = tk.OptionMenu(project_row, recent_var, "")
 menu.grid(row=0, column=3, padx=(6, 0))
 refresh_recent()
 
-stats_frame = ttk.LabelFrame(main, text="Project Analysis", padding=10)
-stats_frame.grid(row=2, column=0, sticky="ew")
+stats_frame = ttk.LabelFrame(main, text="Project Analysis", padding=8)
+stats_frame.grid(row=2, column=0, sticky="new", padx=(0, 8))
 stats_frame.columnconfigure(1, weight=1)
 stats_frame.columnconfigure(3, weight=1)
 
@@ -336,50 +349,99 @@ for name, label_text, row_index, column_index in stats_layout:
         pady=(6, 0),
     )
 
-unsupported_frame = ttk.LabelFrame(main, text="Unsupported Parameters", padding=10)
-unsupported_frame.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-unsupported_frame.columnconfigure(0, weight=1)
+ttk.Separator(stats_frame, orient="horizontal").grid(
+    row=4, column=0, columnspan=4, sticky="ew", pady=(8, 6)
+)
+ttk.Label(stats_frame, text="Unsupported").grid(row=5, column=0, sticky="nw", padx=(0, 8))
 ttk.Label(
-    unsupported_frame,
+    stats_frame,
     textvariable=unsupported_var,
-    wraplength=820,
+    wraplength=500,
     justify="left",
-).grid(row=0, column=0, sticky="w")
+).grid(row=5, column=1, columnspan=3, sticky="w")
 
-controls = ttk.Frame(main)
-controls.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
+controls = ttk.LabelFrame(main, text="Adjustments", padding=8)
+controls.grid(row=2, column=1, rowspan=4, sticky="nsew")
 controls.columnconfigure(0, weight=1)
 controls.columnconfigure(1, weight=1)
-controls.columnconfigure(2, weight=1)
+
+
+def format_slider_value(raw_value, resolution):
+    decimals = 0
+    text = f"{resolution:.10f}".rstrip("0")
+    if "." in text:
+        decimals = len(text.split(".", 1)[1])
+    return f"{float(raw_value):.{decimals}f}"
+
+
+def make_slider_handler(name, resolution):
+    def handle_slider(raw_value):
+        parameter_values[name].set(format_slider_value(raw_value, resolution))
+
+    return handle_slider
+
+
+def sync_slider_from_entry(name):
+    try:
+        parameter_sliders[name].set(float(parameter_values[name].get().strip()))
+    except ValueError:
+        pass
 
 for index, name in enumerate(SUPPORTED_PARAMS):
     config = PARAM_CONFIG[name]
-    frame = ttk.LabelFrame(controls, text=config["label"], padding=10)
-    frame.grid(row=index // 3, column=index % 3, sticky="nsew", padx=4, pady=4)
+    slider_cfg = config["slider"]
+    frame = ttk.Frame(controls, padding=6)
+    frame.grid(row=index, column=0, columnspan=2, sticky="ew", pady=2)
+    frame.columnconfigure(1, weight=1)
+    parameter_enabled[name] = tk.BooleanVar(value=False)
     parameter_modes[name] = tk.StringVar(value=config["modes"][0][0])
     parameter_values[name] = tk.StringVar(value=config["default"])
+    ttk.Checkbutton(
+        frame,
+        text=config["label"],
+        variable=parameter_enabled[name],
+    ).grid(row=0, column=0, sticky="w")
 
-    for row_index, (mode_name, label_text) in enumerate(config["modes"]):
+    mode_frame = ttk.Frame(frame)
+    mode_frame.grid(row=0, column=1, sticky="e")
+    for mode_name, label_text in config["modes"]:
         ttk.Radiobutton(
-            frame,
+            mode_frame,
             text=label_text,
             value=mode_name,
             variable=parameter_modes[name],
-        ).grid(row=row_index, column=0, sticky="w")
+        ).pack(side="left", padx=(0, 6))
 
-    ttk.Label(frame, text="Value").grid(row=2, column=0, sticky="w", pady=(8, 2))
-    ttk.Entry(frame, textvariable=parameter_values[name], width=12).grid(
-        row=3, column=0, sticky="ew"
+    parameter_sliders[name] = tk.Scale(
+        frame,
+        from_=slider_cfg["from"],
+        to=slider_cfg["to"],
+        resolution=slider_cfg["resolution"],
+        orient="horizontal",
+        showvalue=False,
+        command=make_slider_handler(name, slider_cfg["resolution"]),
     )
-    frame.columnconfigure(0, weight=1)
+    parameter_sliders[name].set(float(config["default"]))
+    parameter_sliders[name].grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
+    value_row = ttk.Frame(frame)
+    value_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+    value_row.columnconfigure(1, weight=1)
+    ttk.Label(value_row, text="Value").grid(row=0, column=0, sticky="w", padx=(0, 6))
+    entry = ttk.Entry(value_row, textvariable=parameter_values[name], width=8)
+    entry.grid(row=0, column=1, sticky="w")
+    entry.bind("<FocusOut>", lambda _event, selected_name=name: sync_slider_from_entry(selected_name))
+    entry.bind("<Return>", lambda _event, selected_name=name: sync_slider_from_entry(selected_name))
 
 ttk.Checkbutton(
     main,
     text="Overwrite original (backup once)",
     variable=overwrite,
-).grid(row=5, column=0, sticky="w", pady=(12, 0))
+).grid(row=6, column=0, sticky="w", pady=(10, 0))
 
-ttk.Button(main, text="Apply", command=process).grid(row=6, column=0, pady=(16, 0))
+ttk.Button(main, text="Apply", command=process).grid(
+    row=6, column=1, sticky="e", pady=(10, 0)
+)
 
 clear_scan_display()
 
