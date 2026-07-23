@@ -35,9 +35,9 @@ PARAM_HINTS = {
 # ratio, so you can see the shape of the crop change, not just the size.
 # aspect_ratio = width / height
 FOV_TABS = [
-    ("1:1 square",    1.0,          1.0),
     ("9:16 → 16:9",   9.0 / 16.0,   16.0 / 9.0),
     ("16:9 → 9:16",   16.0 / 9.0,   9.0 / 16.0),
+    ("1:1 square",    1.0,          1.0),
 ]
 
 # Built-in presets. Only include the parameters the preset actively sets;
@@ -548,8 +548,8 @@ def process():
 cfg = load_cfg()
 root = tk.Tk()
 root.title("Insta360 Project Tools — Mass Keyframe Modifier")
-root.geometry("960x680")
-root.minsize(900, 600)
+root.geometry("960x700")
+root.minsize(900, 620)
 
 selected = tk.StringVar()
 overwrite = tk.BooleanVar(value=True)
@@ -695,7 +695,7 @@ for row_index, name in enumerate(SUPPORTED_PARAMS):
     config = PARAM_CONFIG[name]
     slider_cfg = config["slider"]
 
-    parameter_enabled[name] = tk.BooleanVar(value=False)
+    parameter_enabled[name] = tk.BooleanVar(value=(name == "fov"))
     parameter_modes[name] = tk.StringVar(value=config["modes"][0][0])
     parameter_values[name] = tk.StringVar(value=config["default"])
 
@@ -753,7 +753,7 @@ preview_frame = ttk.LabelFrame(main, text="Preview  —  predicted values after 
 preview_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
 preview_frame.columnconfigure(0, weight=3)
 preview_frame.columnconfigure(1, weight=1, minsize=250)
-preview_frame.rowconfigure(1, weight=1)
+preview_frame.rowconfigure(2, weight=1)
 
 preview_header = ttk.Frame(preview_frame)
 preview_header.grid(row=0, column=0, columnspan=2, sticky="ew")
@@ -773,6 +773,25 @@ tk.Label(preview_header, text="●", fg="#e67e22").pack(side="right")
 tk.Label(preview_header, text="   current", fg="#666").pack(side="right")
 tk.Label(preview_header, text="●", fg="#666").pack(side="right")
 
+# Caption row — makes it unambiguous what each panel below is showing.
+caption_row = ttk.Frame(preview_frame)
+caption_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+caption_row.columnconfigure(0, weight=3)
+caption_row.columnconfigure(1, weight=1, minsize=250)
+
+ttk.Label(
+    caption_row,
+    text="Keyframe Timeline Preview",
+    font=("TkDefaultFont", 9, "bold"),
+    foreground="#444",
+).grid(row=0, column=0, sticky="w")
+ttk.Label(
+    caption_row,
+    text="Camera FOV Preview",
+    font=("TkDefaultFont", 9, "bold"),
+    foreground="#444",
+).grid(row=0, column=1, sticky="w", padx=(6, 0))
+
 preview_canvas = tk.Canvas(
     preview_frame,
     height=150,
@@ -780,10 +799,10 @@ preview_canvas = tk.Canvas(
     highlightthickness=1,
     highlightbackground="#ccc",
 )
-preview_canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+preview_canvas.grid(row=2, column=0, sticky="nsew", pady=(4, 0))
 
 fov_scene_notebook = ttk.Notebook(preview_frame)
-fov_scene_notebook.grid(row=1, column=1, sticky="nsew", pady=(6, 0), padx=(6, 0))
+fov_scene_notebook.grid(row=2, column=1, sticky="nsew", pady=(4, 0), padx=(6, 0))
 
 fov_scene_canvases = []
 for _tab_label, _src_aspect, _tgt_aspect in FOV_TABS:
@@ -804,9 +823,12 @@ Tooltip(
     "Preview of framing at the loaded project's average FOV.\n\n"
     "Tabs:\n"
     "  • 1:1 square — neutral view, doesn't assume an aspect ratio.\n"
-    "  • 9:16 → 16:9 — how a landscape frame would crop the subject after 'widen' preset.\n"
-    "  • 16:9 → 9:16 — how a portrait frame would crop after 'narrow' preset.\n\n"
-    "Grey rectangle = current framing. Orange dashed = predicted after Apply.\n"
+    "  • 9:16 → 16:9 — starting from a portrait frame that nicely fits the subject,\n"
+    "    shows what the same footage looks like once widened to landscape.\n"
+    "  • 16:9 → 9:16 — starting from a landscape frame that nicely fits the subject,\n"
+    "    shows what it looks like once narrowed to portrait.\n\n"
+    "Grey rectangle = current framing (sized to just fit the subject in that tab's\n"
+    "starting aspect ratio). Orange dashed = predicted after Apply.\n"
     "The person silhouette is the same size in every tab — the frame is what changes.\n"
     "Values are the .insproj FOV scale factor, not degrees.",
 )
@@ -989,8 +1011,18 @@ def redraw_fov_scene():
     #     scaled *relative to current* by the FOV ratio. So the current frame
     #     stays put and the predicted frame grows/shrinks by exactly the
     #     multiplier you dialed in — same intuition as scrubbing a slider.
-    CURRENT_REF_WIDTH_FRAC = 0.24  # 24% of scene width for current at its own FOV
-    ref_w = scene_w * CURRENT_REF_WIDTH_FRAC
+    # Reference size for "current" is anchored to the PERSON'S HEIGHT (with a
+    # small margin) rather than a fixed fraction of scene width. This way the
+    # current frame always nicely bounds the full silhouette regardless of
+    # which aspect ratio this tab uses — a wide (16:9) source aspect
+    # naturally becomes a WIDE-and-just-tall-enough box, a narrow (9:16)
+    # source aspect becomes a NARROW-and-tall box. Without this, a fixed
+    # reference width made wide-aspect tabs render a frame too short to
+    # contain the person.
+    PERSON_FIT_MARGIN = 1.18  # a little headroom/footroom around the figure
+    person_total_h = py_feet - py_head_top
+    ref_h = person_total_h * PERSON_FIT_MARGIN
+    ref_w = ref_h * source_aspect
     center_y = (py_head_top + py_feet) / 2
 
     def compute_half_dims(fov, aspect):
@@ -1019,10 +1051,12 @@ def redraw_fov_scene():
     # Current: fixed reference size, solid grey, always centered
     draw_frame(current_avg, source_aspect, current_pan_offset, "#333", line_width=3)
 
-    # Predicted: scaled + shifted by the pan adjustment delta, dashed orange
-    fov_changed = abs(predicted_avg - current_avg) > 1e-9
-    pan_changed = abs(pan_delta_rad) > 1e-9
-    if fov_changed or pan_changed:
+    # Predicted: scaled + shifted by the pan adjustment delta, dashed orange.
+    # Shown whenever FOV or Pan is enabled — even if the resulting value
+    # happens to equal current (e.g. Scale ×1) — so the frame doesn't
+    # disappear just because the math currently nets out to "no change".
+    show_predicted = parameter_enabled["fov"].get() or parameter_enabled["pan"].get()
+    if show_predicted:
         draw_frame(predicted_avg, target_aspect, predicted_pan_offset,
                    "#e67e22", dash=(5, 3), line_width=2)
 
@@ -1031,7 +1065,7 @@ def redraw_fov_scene():
     canvas.create_text(scene_left, label_y,
                        text=f"current {current_avg:.2f}",
                        anchor="w", fill="#222", font=("TkDefaultFont", 9, "bold"))
-    if fov_changed or pan_changed:
+    if show_predicted:
         ratio = predicted_avg / current_avg if current_avg != 0 else 0
         label = f"predicted {predicted_avg:.2f}  (×{ratio:.2f})"
         canvas.create_text(scene_right, label_y,
