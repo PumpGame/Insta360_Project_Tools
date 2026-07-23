@@ -250,16 +250,25 @@ def save_project(path, data, overwrite_original):
     return output_path
 
 
-def format_range_text(stats):
+def format_range_text(stats, unit=""):
     if stats["min"] is None:
         return "—"
-    return f"{stats['min']:g} / {stats['max']:g}"
+    return f"{stats['min']:g}{unit} / {stats['max']:g}{unit}"
 
 
 def update_scan_display(scan_result):
     keyframe_count_var.set(str(scan_result["keyframe_count"]))
     for name in SUPPORTED_PARAMS:
-        range_vars[name].set(format_range_text(scan_result["ranges"][name]))
+        stats = scan_result["ranges"][name]
+        if name in ("pan", "tilt", "roll") and stats["min"] is not None:
+            # File stores radians; display as degrees.
+            display_stats = {
+                "min": math.degrees(stats["min"]),
+                "max": math.degrees(stats["max"]),
+            }
+            range_vars[name].set(format_range_text(display_stats, "°"))
+        else:
+            range_vars[name].set(format_range_text(stats))
     unsupported = scan_result["unsupported"]
     unsupported_var.set(", ".join(unsupported) if unsupported else "None")
 
@@ -453,14 +462,20 @@ def get_parameter_settings():
     settings = {}
     for name in SUPPORTED_PARAMS:
         try:
-            settings[name] = {
-                "enabled": parameter_enabled[name].get(),
-                "mode": parameter_modes[name].get(),
-                "value": float(parameter_values[name].get().strip()),
-            }
+            value = float(parameter_values[name].get().strip())
         except ValueError:
             label = PARAM_CONFIG[name]["label"]
             raise ValueError(f"{label}: enter a valid number.")
+        # Angular parameters: the UI is in degrees for readability, but the
+        # .insproj file stores radians — convert here so modify_parameter
+        # works in the file's own units.
+        if name in ("pan", "tilt", "roll"):
+            value = math.radians(value)
+        settings[name] = {
+            "enabled": parameter_enabled[name].get(),
+            "mode": parameter_modes[name].get(),
+            "value": value,
+        }
     return settings
 
 
@@ -944,31 +959,31 @@ def redraw_fov_scene():
     canvas.create_line(cx, py_torso_end, cx + person_h * 0.14, py_feet,
                        fill="#2a2a2a")
 
-    # --- Compute pan offsets. Pan values in .insproj files are in RADIANS
-    #     (typical range ±π). We map full scene width = 2π so a pan of π/2
-    #     (~90°) shifts the frame by a quarter of the scene width.
-    pan_values = current_series.get("pan", [])
-    if pan_values:
-        current_pan = sum(pan_values) / len(pan_values)
-    else:
-        current_pan = 0.0
-    predicted_pan = current_pan
-    if pan_values and parameter_enabled["pan"].get():
+    # --- Compute pan offset for the PREDICTED frame only. The current frame
+    #     always stays centered — it represents "how wide/narrow is my
+    #     current framing", not "where was the camera actually pointed" (the
+    #     footage's raw absolute pan isn't relevant to that question and was
+    #     confusingly shifting the reference frame off-center).
+    #     Pan values in .insproj files are in RADIANS; the UI field is in
+    #     DEGREES. We map full scene width = 2π radians of pan delta.
+    pan_delta_rad = 0.0
+    if parameter_enabled["pan"].get():
         try:
-            pan_val = float(parameter_values["pan"].get().strip())
+            pan_delta_rad = math.radians(float(parameter_values["pan"].get().strip()))
             pan_mode = parameter_modes["pan"].get()
-            predicted_pan_series = [
-                modify_parameter(v, pan_mode, pan_val) for v in pan_values
-            ]
-            predicted_pan = sum(predicted_pan_series) / len(predicted_pan_series)
+            if pan_mode == "set":
+                # "Set" replaces the value outright — there's no single
+                # "delta" from an average, so we don't shift the preview
+                # (it would require picking a reference we don't have).
+                pan_delta_rad = 0.0
         except ValueError:
-            pass
+            pan_delta_rad = 0.0
 
     def pan_to_offset(pan_radians):
         return (pan_radians / (2 * math.pi)) * scene_w
 
-    current_pan_offset = pan_to_offset(current_pan)
-    predicted_pan_offset = pan_to_offset(predicted_pan)
+    current_pan_offset = 0.0
+    predicted_pan_offset = pan_to_offset(pan_delta_rad)
 
     # --- FOV frames: current is a FIXED REFERENCE (never scales), predicted is
     #     scaled *relative to current* by the FOV ratio. So the current frame
@@ -1001,12 +1016,12 @@ def redraw_fov_scene():
             kwargs["dash"] = dash
         canvas.create_rectangle(x1, y1, x2, y2, **kwargs)
 
-    # Current: fixed reference size, solid grey, positioned by current pan
+    # Current: fixed reference size, solid grey, always centered
     draw_frame(current_avg, source_aspect, current_pan_offset, "#333", line_width=3)
 
-    # Predicted: scaled + shifted, dashed orange — shown only if something differs
+    # Predicted: scaled + shifted by the pan adjustment delta, dashed orange
     fov_changed = abs(predicted_avg - current_avg) > 1e-9
-    pan_changed = abs(predicted_pan - current_pan) > 1e-9
+    pan_changed = abs(pan_delta_rad) > 1e-9
     if fov_changed or pan_changed:
         draw_frame(predicted_avg, target_aspect, predicted_pan_offset,
                    "#e67e22", dash=(5, 3), line_width=2)
@@ -1055,15 +1070,25 @@ def redraw_preview():
         )
         return
 
-    # Compute predicted series
+    is_angular = name in ("pan", "tilt", "roll")
+
+    # Compute predicted series (in the file's native units — radians for
+    # angular params) using the raw current values.
     predicted = list(current)
     if parameter_enabled[name].get():
         try:
-            value = float(parameter_values[name].get().strip())
+            raw_value = float(parameter_values[name].get().strip())
+            value = math.radians(raw_value) if is_angular else raw_value
             mode = parameter_modes[name].get()
             predicted = [modify_parameter(v, mode, value) for v in current]
         except ValueError:
             pass  # keep predicted == current on bad input
+
+    # For angular params, display in degrees (the UI's unit) rather than
+    # the file's raw radians.
+    if is_angular:
+        current = [math.degrees(v) for v in current]
+        predicted = [math.degrees(v) for v in predicted]
 
     # Y range across both series (with a small margin)
     all_vals = current + predicted
